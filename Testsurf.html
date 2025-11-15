@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CS2 Surf Prototype</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html, body { margin: 0; height: 100%; background: #0e0e12; overflow: hidden; }
+    #overlay {
+      position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
+      color: #eaeaea; font-family: system-ui, sans-serif; text-align: center;
+      background: rgba(20,20,30,0.6); padding: 10px 14px; border-radius: 8px; user-select: none;
+    }
+    #help { font-size: 13px; opacity: 0.9; }
+    #crosshair {
+      position: fixed; left: 50%; top: 50%; width: 10px; height: 10px;
+      transform: translate(-50%, -50%); display: grid; place-items: center;
+    }
+    #crosshair::before {
+      content: ""; width: 2px; height: 2px; background: #fff; border-radius: 50%;
+      box-shadow: 0 0 8px rgba(255,255,255,0.8);
+    }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <div><strong>CS2 Surf Prototype</strong></div>
+    <div id="help">WASD to move, Space to jump, Mouse to look. Click to lock pointer. Try riding the ramps!</div>
+  </div>
+  <div id="crosshair"></div>
+
+  <!-- Three.js from CDN -->
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.160.0/examples/js/controls/PointerLockControls.js"></script>
+
+  <script>
+  ;(() => {
+    // Scene setup
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0e0e12);
+
+    const camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, 0.1, 2000);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // Lighting
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x222244, 0.7);
+    scene.add(hemi);
+
+    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+    sun.position.set(40, 80, 40);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    scene.add(sun);
+
+    // Controls
+    const controls = new THREE.PointerLockControls(camera, document.body);
+    camera.position.set(0, 8, 0);
+    scene.add(controls.getObject());
+
+    document.body.addEventListener('click', () => controls.lock());
+
+    // World materials
+    const matGround = new THREE.MeshStandardMaterial({ color: 0x1c1f26, roughness: 0.9, metalness: 0.0 });
+    const matRamp = new THREE.MeshStandardMaterial({ color: 0x2aaaea, roughness: 0.5, metalness: 0.1 });
+    const matPlatform = new THREE.MeshStandardMaterial({ color: 0x303a46, roughness: 0.7 });
+
+    // Ground
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), matGround);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Simple platforms
+    function platform(x, y, z, w, d) {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, 1, d), matPlatform);
+      m.position.set(x, y, z);
+      m.castShadow = true; m.receiveShadow = true;
+      scene.add(m);
+      colliders.push(m);
+      return m;
+    }
+
+    // Surf ramps
+    function ramp(width=40, length=160, height=30, tiltDeg=25, x=0, y=8, z=-100, flipped=false) {
+      const geo = new THREE.BoxGeometry(width, 2, length);
+      const m = new THREE.Mesh(geo, matRamp);
+      m.castShadow = true; m.receiveShadow = true;
+      m.position.set(x, y, z);
+      const tilt = THREE.MathUtils.degToRad(tiltDeg) * (flipped ? -1 : 1);
+      m.rotation.z = tilt;
+      scene.add(m);
+      ramps.push(m);
+      colliders.push(m);
+      return m;
+    }
+
+    const colliders = [];
+    const ramps = [];
+
+    platform(0, 6, 0, 40, 40);
+    ramp(40, 160, 30, 30, -60, 8, -120, false); // left-lean
+    ramp(40, 160, 30, 30, 60, 8, -320, true);   // right-lean
+    platform(0, 20, -480, 60, 60);
+
+    // Skybox-ish ambient color gradient
+    const skyGeo = new THREE.SphereGeometry(1000, 32, 32);
+    const skyMat = new THREE.MeshBasicMaterial({ color: 0x0d1117, side: THREE.BackSide });
+    const sky = new THREE.Mesh(skyGeo, skyMat);
+    scene.add(sky);
+
+    // Player physics
+    const player = {
+      height: 6,
+      radius: 1.0,
+      pos: new THREE.Vector3(0, 10, 10),
+      vel: new THREE.Vector3(),
+      dir: new THREE.Vector3(),
+      onGround: false,
+      wishDir: new THREE.Vector3(),
+    };
+
+    // Movement params tuned for surf feel
+    const params = {
+      gravity: 38.0,            // strong gravity for speed preservation on ramps
+      jumpVel: 12.0,            // jump impulse (rarely used in surf)
+      maxGroundSpeed: 7.0,      // walking speed
+      groundAccel: 180.0,       // snappy ground accel for setup
+      airAccel: 60.0,           // air acceleration for strafing control
+      airCap: 1.2,              // max speed gain per tick from air accel
+      friction: 6.0,            // friction on flat ground
+      rampFriction: 0.35,       // reduced friction on ramps to preserve lateral speed
+      stopSpeed: 1.0,
+      tick: 1/120,              // physics tick
+      yawSensitivity: 0.0025,
+      pitchSensitivity: 0.0018,
+      pitchMin: THREE.MathUtils.degToRad(-85),
+      pitchMax: THREE.MathUtils.degToRad(85),
+    };
+
+    // Input
+    const keys = { w:false, a:false, s:false, d:false, space:false };
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyW') keys.w = true;
+      if (e.code === 'KeyA') keys.a = true;
+      if (e.code === 'KeyS') keys.s = true;
+      if (e.code === 'KeyD') keys.d = true;
+      if (e.code === 'Space') keys.space = true;
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'KeyW') keys.w = false;
+      if (e.code === 'KeyA') keys.a = false;
+      if (e.code === 'KeyS') keys.s = false;
+      if (e.code === 'KeyD') keys.d = false;
+      if (e.code === 'Space') keys.space = false;
+    });
+
+    // Mouse look
+    let yaw = 0, pitch = 0;
+    controls.addEventListener('lock', () => { document
