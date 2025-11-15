@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CS Surf – 3D HTML Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#0a0f1a; }
+    canvas { display:block; }
+    #hud {
+      position:fixed; left:12px; top:12px; color:#e8f0ff; font:12px/1.4 system-ui, Arial, sans-serif;
+      background:rgba(0,0,0,0.35); padding:8px 10px; border-radius:6px; backdrop-filter: blur(4px);
+    }
+    #centerMsg {
+      position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+      color:#e8f0ff; font:16px system-ui, Arial, sans-serif; opacity:0.8;
+    }
+    a { color:#9ad1ff; }
+  </style>
+</head>
+<body>
+<div id="hud">
+  <div><b>Controls:</b> Click to lock mouse, WASD move, Space jump, Shift speed cap toggle, R reset</div>
+  <div id="stats"></div>
+</div>
+<div id="centerMsg">Click to capture mouse</div>
+
+<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+
+<script>
+(() => {
+  // ——— Core setup
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0f1a);
+  const fog = new THREE.Fog(0x0a0f1a, 60, 200);
+  scene.fog = fog;
+
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.01, 1000);
+
+  // ——— Lighting
+  const hemi = new THREE.HemisphereLight(0x9ad1ff, 0x223344, 0.5);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+  sun.position.set(40, 60, 20);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024,1024);
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 200;
+  scene.add(sun);
+
+  // ——— Materials
+  const matFloor = new THREE.MeshStandardMaterial({ color: 0x1f2b38, roughness: 0.9, metalness: 0.0 });
+  const matRamp = new THREE.MeshStandardMaterial({ color: 0x4f90ff, roughness: 0.5, metalness: 0.2 });
+  const matRail = new THREE.MeshStandardMaterial({ color: 0x77ffa5, roughness: 0.3, metalness: 0.1 });
+  const matAccent = new THREE.MeshStandardMaterial({ color: 0xffd166, roughness: 0.4 });
+
+  // ——— Level geometry
+  const objects = []; // collision meshes
+
+  function addMesh(mesh, receive = true, cast = false) {
+    mesh.receiveShadow = receive;
+    mesh.castShadow = cast;
+    scene.add(mesh);
+    objects.push(mesh);
+    return mesh;
+  }
+
+  // Big floor
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), matFloor);
+  floor.rotation.x = -Math.PI / 2;
+  addMesh(floor);
+
+  // Curved surf ramp (quarter-pipe style)
+  function createSurfRamp(width, depth, radius, segments, inclineDeg, position) {
+    // Generate a curved ramp by extruding along a circular arc
+    const geom = new THREE.BufferGeometry();
+
+    const segW = segments;
+    const segD = segments;
+    const verts = [];
+    const normals = [];
+    const uvs = [];
+    const indices = [];
+
+    const incline = THREE.MathUtils.degToRad(inclineDeg);
+
+    for (let d = 0; d <= segD; d++) {
+      const t = d / segD;
+      const angle = t * (Math.PI / 2); // 90° arc
+      const y = Math.sin(angle) * radius;
+      const z = Math.cos(angle) * radius;
+      for (let w = 0; w <= segW; w++) {
+        const s = w / segW;
+        const x = (s - 0.5) * width;
+        // Incline rotation (tilt ramp forward/backward)
+        const zz = z * Math.cos(incline) - y * Math.sin(incline);
+        const yy = z * Math.sin(incline) + y * Math.cos(incline);
+        verts.push(x, yy, -zz);
+        // Approx normals (pointing outward from arc)
+        const nx = 0;
+        const ny = Math.cos(angle) * Math.cos(incline) + Math.sin(angle) * Math.sin(incline);
+        const nz = -(Math.cos(angle) * Math.sin(incline) - Math.sin(angle) * Math.cos(incline));
+        normals.push(nx, ny, nz);
+        uvs.push(s, t);
+      }
+    }
+    for (let d = 0; d < segD; d++) {
+      for (let w = 0; w < segW; w++) {
+        const a = d * (segW + 1) + w;
+        const b = a + 1;
+        const c = a + (segW + 1);
+        const d2 = c + 1;
+        indices.push(a, c, b, b, c, d2);
+      }
+    }
+
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geom.setIndex(indices);
+    geom.computeBoundingSphere();
+
+    const ramp = new THREE.Mesh(geom, matRamp);
+    ramp.position.copy(position);
+    ramp.rotation.y = 0;
+    ramp.castShadow = true;
+    ramp.receiveShadow = true;
+    addMesh(ramp, true, true);
+    return ramp;
+  }
+
+  // Create a sequence: ramp → gap → ramp → platform
+  const ramp1 = createSurfRamp(30, 30, 20, 32, 10, new THREE.Vector3(-25, 0, -30));
+  const ramp2 = createSurfRamp(30, 30, 20, 32, -8, new THREE.Vector3(25, 0, -10));
+
+  // Mid air platform
+  const plat1 = new THREE.Mesh(new THREE.BoxGeometry(20, 1, 12), matAccent);
+  plat1.position.set(0, 12, -20);
+  addMesh(plat1);
+
+  // Rails/guards
+  const railGeo = new THREE.CylinderGeometry(0.3, 0.3, 40, 12);
+  const railL = new THREE.Mesh(railGeo, matRail);
+  railL.rotation.z = Math.PI / 2;
+  railL.position.set(-10, 14, -20);
+  addMesh(railL, false, true);
+
+  const railR = railL.clone();
+  railR.position.x = 10;
+  addMesh(railR, false, true);
+
+  // Killplane (reset if you fall)
+  const kill = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), new THREE.MeshBasicMaterial({ color: 0x000000, visible:false }));
+  kill.rotation.x = -Math.PI / 2;
+  kill.position.y = -40;
+  scene.add(kill);
+
+  // ——— Player/controller
+  const player = {
+    pos: new THREE.Vector3(0, 4, 0),
+    vel: new THREE.Vector3(0, 0, 0),
+    radius: 0.6,  // capsule half-width
+    height: 1.8,  // capsule height
+    onGround: false,
+    yaw: 0,
+    pitch: 0
+  };
+
+  // Visualize player as a small capsule
+  const capsuleGeom = new THREE.CapsuleGeometry(0.6, 0.6, 8, 16);
+  const capsuleMesh = new THREE.Mesh(capsuleGeom, new THREE.MeshStandardMaterial({ color: 0xff5d8f, roughness:0.5 }));
+  capsuleMesh.castShadow = true;
+  scene.add(capsuleMesh);
+
+  // Camera offset
+  const camOffset = new THREE.Vector3(0, 0.6, 0);
+
+  // Input
+  const keys = { KeyW:false, KeyA:false, KeyS:false, KeyD:false, Space:false, Shift:false };
+  let pointerLocked = false;
+  const statsEl = document.getElementById('stats');
+  const centerMsg = document.getElementById('centerMsg');
+
+  document.body.addEventListener('keydown', e => {
+    if (e.code in keys) keys[e.code] = true;
+    if (e.code === 'KeyR') resetPlayer();
+  });
+  document.body.addEventListener('keyup', e => { if (e.code in keys) keys[e.code] = false; });
+  renderer.domElement.addEventListener('click', () => {
+    renderer.domElement.requestPointerLock();
+  });
+  document.addEventListener('pointerlockchange', () => {
+    pointerLocked = (document.pointerLockElement === renderer.domElement);
+    centerMsg.style.display = pointerLocked ? 'none' : 'block';
+  });
+  document.addEventListener('mousemove', e => {
+    if (!pointerLocked) return;
+    const sensitivity = 0.0024;
+    player.yaw   -= e.movementX * sensitivity;
+    player.pitch -= e.movementY * sensitivity;
+    player.pitch = Math.max(-Math.PI/2+0.01, Math.min(Math.PI/2-0.01, player.pitch));
+  });
+
+  // Movement params (surf-flavored)
+  const params = {
+    gravity: 6.5,          // low gravity for surfing feel
+    groundAccel: 60,       // acceleration while on ground
+    airAccel: 24,          // air control acceleration
+    maxGroundSpeed: 6,     // walking speed cap
+    maxAirSpeed: 100,      // allow high speeds in air
+    friction: 6,           // ground friction
+    jumpSpeed: 6.0,        // jump impulse
+    stepHeight: 0.4,       // helps step over tiny edges
+    slideBoost: 0.8        // extra along-surface boost on ramps
+  };
+
+  let useSpeedCap = false; // Shift toggles speed cap
+
+  // Basic collision using raycasts against triangle meshes
+  const raycaster = new THREE.Raycaster();
+  const up = new THREE.Vector3(0,1,0);
+
+  function resetPlayer() {
+    player.pos.set(-25, 6, -34);
+    player.vel.set(0, 0, 0);
+    player.onGround = false;
+    player.yaw = Math.PI * 0.15;
+    player.pitch = 0;
+  }
+  resetPlayer();
+
+  // Utility: clamp horizontal speed
+  function clampHorizVelocity(v, max) {
+    const h = new THREE.Vector3(v.x, 0, v.z);
+    const sp = h.length();
+    if (sp > max) {
+      h.normalize().multiplyScalar(max);
+      v.x = h.x; v.z = h.z;
+    }
+  }
+
+  // Project velocity onto a plane to “stick” to ramp surfaces
+  function projectOnPlane(vel, normal) {
+    const n = normal.clone().normalize();
+    const dot = vel.dot(n);
+    vel.addScaledVector(n, -dot);
+  }
+
+  function getForwardVector() {
+    return new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw)).normalize();
+  }
+  function getRightVector() {
+    return new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw)).normalize();
+  }
+
+  // Ground check
+  function checkGround() {
+    const origin = player.pos.clone();
+    origin.y += player.height * 0.5;
+    raycaster.set(origin, new THREE.Vector3(0, -1, 0));
+    raycaster.far = player.height * 0.6;
+    const hits = raycaster.intersectObjects(objects, false);
+    if (hits.length) {
+      const hit = hits[0];
+      const slopeOK = hit.face && hit.face.normal.dot(up) > 0.15; // allow ramps
+      if (slopeOK) {
+        player.onGround = true;
+        // Snap slightly above ground
+        player.pos.y = hit.point.y + player.radius * 0.95;
+        // Stick velocity along surface
+        projectOnPlane(player.vel, hit.face.normal);
+        // Ramp slide boost
+        const along = new THREE.Vector3().copy(hit.face.normal).cross(getRightVector()).normalize();
+        player.vel.addScaledVector(along, params.slideBoost * 0.02);
+      } else {
+        player.onGround = false;
+      }
+    } else {
+      player.onGround = false;
+    }
+  }
+
+  // Movement
+  function applyMovement(dt) {
+    // Input wishdir
+    let wish = new THREE.Vector3();
+    if (keys.KeyW) wish.add(getForwardVector());
+    if (keys.KeyS) wish.add(getForwardVector().multiplyScalar(-1));
+    if (keys.KeyA) wish.add(getRightVector().multiplyScalar(-1));
+    if (keys.KeyD) wish.add(getRightVector());
+
+    if (keys.Shift) useSpeedCap = !useSpeedCap; // tap to toggle
+    keys.Shift = false; // prevent repeat
+
+    if (wish.lengthSq() > 0) wish.normalize();
+
+    if (player.onGround) {
+      // Ground accel + friction
+      const speed = player.vel.length();
+      const drop = Math.max(0, params.friction * dt);
+      const newSpeed = Math.max(0, speed - drop);
+      player.vel.multiplyScalar(newSpeed / Math.max(speed, 1e-6));
+
+      const accel = params.groundAccel;
+      player.vel.addScaledVector(wish, accel * dt);
+      clampHorizVelocity(player.vel, params.maxGroundSpeed);
+      // Jump
+      if (keys.Space) {
+        player.vel.y = params.jumpSpeed;
+        player.onGround = false;
+      }
+    } else {
+      // Air control
+      player.vel.addScaledVector(wish, params.airAccel * dt);
+      if (useSpeedCap) clampHorizVelocity(player.vel, params.maxAirSpeed);
+      player.vel.y -= params.gravity * dt;
+    }
+  }
+
+  // Simple collision resolve (prevent clipping through ramps)
+  function resolveCollisions() {
+    // Cast small sphere downwards and push out of surfaces
+    const origin = player.pos.clone();
+    const directions = [
+      new THREE.Vector3(0,-1,0),
+      new THREE.Vector3(0,1,0),
+      new THREE.Vector3(1,0,0),
+      new THREE.Vector3(-1,0,0),
+      new THREE.Vector3(0,0,1),
+      new THREE.Vector3(0,0,-1),
+    ];
+    for (let dir of directions) {
+      raycaster.set(origin, dir);
+      raycaster.far = player.radius + 0.4;
+      const hits = raycaster.intersectObjects(objects, false);
+      if (hits.length) {
+        const hit = hits[0];
+        const push = player.radius - origin.distanceTo(hit.point);
+        if (push > -0.05 && push < 0.8) {
+          player.pos.addScaledVector(dir, -push);
+          projectOnPlane(player.vel, dir);
+        }
+      }
+    }
+  }
+
+  // ——— Animation loop
+  let last = performance.now();
+  function tick(now) {
+    const dt = Math.min(0.033, (now - last) / 1000); // clamp to ~30fps step
+    last = now;
+
+    applyMovement(dt);
+    checkGround();
+    resolveCollisions();
+
+    // Kill/reset
+    if (player.pos.y < -30) resetPlayer();
+
+    // Update visuals
+    capsuleMesh.position.copy(player.pos);
+    capsuleMesh.position.y += 0.9;
+    capsuleMesh.rotation.y = player.yaw;
+
+    const camDir = new THREE.Vector3(
+      Math.sin(player.yaw) * Math.cos(player.pitch),
+      Math.sin(player.pitch),
+      Math.cos(player.yaw) * Math.cos(player.pitch)
+    ).normalize();
+
+    camera.position.copy(player.pos.clone().add(camOffset));
+    camera.lookAt(player.pos.clone().add(camDir.multiplyScalar(10)));
+
+    // UI
+    statsEl.textContent =
+      `Speed: ${player.vel.length().toFixed(2)}  ` +
+      `Ground: ${player.onGround ? 'Yes' : 'No'}  ` +
+      `Cap: ${useSpeedCap ? 'On' : 'Off'}`;
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // Resize
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // Add some decorative world elements
+  function addDecor() {
+    const box = new THREE.Mesh(new THREE.BoxGeometry(6, 2, 6), matAccent);
+    box.position.set(-40, 2, -50);
+    addMesh(box);
+    const sign = new THREE.Mesh(new THREE.BoxGeometry(10, 4, 0.3), matAccent);
+    sign.position.set(0, 6, 10);
+    addMesh(sign);
+  }
+  addDecor();
+})();
+</script>
+</body>
+</html>
