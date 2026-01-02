@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Retro Battles – Web Prototype</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, Arial, sans-serif;
+      background: #111;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    #app {
+      width: 360px;
+      background: #1b1b1b;
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+      overflow: hidden;
+    }
+    header {
+      padding: 12px;
+      text-align: center;
+      background: #222;
+      font-weight: bold;
+      letter-spacing: 1px;
+    }
+    .screen {
+      display: none;
+      padding: 16px;
+    }
+    .screen.active {
+      display: block;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      margin: 8px 0;
+      border: none;
+      border-radius: 10px;
+      background: #ff3c3c;
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #444;
+    }
+    canvas {
+      background: #000;
+      display: block;
+      margin: 0 auto;
+      border-radius: 8px;
+    }
+    .hud {
+      text-align: center;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>RETRO BATTLES (WEB)</header>
+
+    <!-- MENU -->
+    <div id="menu" class="screen active">
+      <button onclick="startGame('tap')">Tap Battle</button>
+      <button onclick="startGame('dodge')">Dodge Battle</button>
+    </div>
+
+    <!-- GAME -->
+    <div id="game" class="screen">
+      <canvas id="canvas" width="300" height="300"></canvas>
+      <div class="hud" id="hud"></div>
+      <input id="playerName" placeholder="Your name" style="width:100%;padding:8px;margin-top:8px;border-radius:8px;border:none" />
+      <button onclick="submitScore()">Submit Score</button>
+      <button class="secondary" onclick="goMenu()">Back to Menu</button>
+    </div>
+
+    <!-- LEADERBOARD -->
+    <div id="leaderboard" class="screen">
+      <h3 id="leaderboardTitle">Leaderboard</h3>
+      <ol id="scores"></ol>
+      <button class="secondary" onclick="goMenu()">Back</button>
+    </div>
+  </div>
+
+  <script>
+    const menu = document.getElementById('menu');
+    const gameScreen = document.getElementById('game');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const hud = document.getElementById('hud');
+
+    let currentGame = null;
+    let currentGameKey = null;
+    let animationId = null;
+    let lastScore = 0;
+
+    function goMenu() {
+      cancelAnimationFrame(animationId);
+      currentGame = null;
+      menu.classList.add('active');
+      gameScreen.classList.remove('active');
+    }
+
+    function startGame(type) {
+      currentGameKey = type;
+      menu.classList.remove('active');
+      gameScreen.classList.add('active');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      if (type === 'tap') tapBattle();
+      if (type === 'dodge') dodgeBattle();
+    }
+
+    /* =====================
+       GAME 1: TAP BATTLE
+       Similar to Retro Battles rapid tap games
+    ====================== */
+    function tapBattle() {
+      let score = 0;
+      let time = 5; // seconds
+      hud.textContent = `Score: ${score} | Time: ${time}`;
+
+      canvas.onclick = () => {
+        score++;
+        hud.textContent = `Score: ${score} | Time: ${time}`;
+      };
+
+      const timer = setInterval(() => {
+        time--;
+        hud.textContent = `Score: ${score} | Time: ${time}`;
+        if (time <= 0) {
+          clearInterval(timer);
+          canvas.onclick = null;
+          hud.textContent = `Final Score: ${score}`;
+          lastScore = score;
+        }
+      }, 1000);
+    }
+
+    /* =====================
+       GAME 2: DODGE BATTLE
+       Avoid falling blocks
+    ====================== */
+    function dodgeBattle() {
+      let player = { x: 140, y: 260, w: 20, h: 20 };
+      let blocks = [];
+      let alive = true;
+      let score = 0;
+
+      document.onmousemove = e => {
+        const rect = canvas.getBoundingClientRect();
+        player.x = e.clientX - rect.left - player.w / 2;
+      };
+
+      function loop() {
+        if (!alive) return;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = '#0f0';
+        ctx.fillRect(player.x, player.y, player.w, player.h);
+
+        if (Math.random() < 0.03) {
+          blocks.push({ x: Math.random() * 280, y: 0, s: 3 });
+        }
+
+        ctx.fillStyle = '#f00';
+        blocks.forEach(b => {
+          b.y += b.s;
+          ctx.fillRect(b.x, b.y, 20, 20);
+
+          if (
+            b.x < player.x + player.w &&
+            b.x + 20 > player.x &&
+            b.y < player.y + player.h &&
+            b.y + 20 > player.y
+          ) {
+            alive = false;
+            lastScore = score;
+            hud.textContent = `Game Over! Score: ${score}`;
+          }
+        });
+
+        blocks = blocks.filter(b => b.y < 300);
+        score++;
+        hud.textContent = `Score: ${score}`;
+
+        animationId = requestAnimationFrame(loop);
+      }
+
+      loop();
+    }
+
+    function submitScore() {
+      const name = document.getElementById('playerName').value || 'Player';
+      if (!currentGameKey) return;
+
+      const key = `scores_${currentGameKey}`;
+      let scores = JSON.parse(localStorage.getItem(key) || '[]');
+
+      // Check if this username already exists
+      const existingIndex = scores.findIndex(s => s.name === name);
+
+      if (existingIndex !== -1) {
+        // Keep only the higher score
+        if (lastScore > scores[existingIndex].score) {
+          scores[existingIndex].score = lastScore;
+        }
+      } else {
+        scores.push({ name, score: lastScore });
+      }
+
+      // Sort and keep top 10
+      scores.sort((a, b) => b.score - a.score);
+      scores = scores.slice(0, 10);
+
+      localStorage.setItem(key, JSON.stringify(scores));
+      showLeaderboard(currentGameKey);
+    }
+
+    function showLeaderboard(gameKey) {
+      menu.classList.remove('active');
+      gameScreen.classList.remove('active');
+      document.getElementById('leaderboard').classList.add('active');
+
+      document.getElementById('leaderboardTitle').textContent =
+        gameKey === 'tap' ? 'Tap Battle Leaderboard' : 'Dodge Battle Leaderboard';
+
+      const list = document.getElementById('scores');
+      list.innerHTML = '';
+      const scores = JSON.parse(localStorage.getItem(`scores_${gameKey}`) || '[]');
+
+      scores.forEach(s => {
+        const li = document.createElement('li');
+        li.textContent = `${s.name}: ${s.score}`;
+        list.appendChild(li);
+      });
+    }
+  </script>
+</body>
+</html>
