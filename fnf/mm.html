@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FNF Mod Page Generator</title>
+</head>
+<body style="background:#111; color:white; font-family:sans-serif; padding:20px;">
+
+<h2>FNF Mod HTML Generator</h2>
+
+<input id="modUrl" placeholder="Enter GitHub RAW mod URL" style="width:400px;">
+<button onclick="generate()">Generate</button>
+
+<br><br>
+
+<textarea id="output" style="width:100%; height:400px;"></textarea>
+
+<script>
+function generate() {
+    const url = document.getElementById("modUrl").value.trim();
+
+    if (!url) {
+        alert("Enter a mod URL!");
+        return;
+    }
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+<base href="https://cdn.jsdelivr.net/gh/genizy/fridayfunk@65da3b8e88b909a8e27f8d750533a758d8dc54f3/">
+<meta charset="utf-8">
+<title>FNF Mod</title>
+
+<script src="Funkin.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<style>
+html,body { margin:0; padding:0; background:black; overflow:hidden; }
+#openfl-content { width:100%; height:100%; }
+</style>
+</head>
+
+<body>
+
+<div id="openfl-content"></div>
+
+<script>
+window.modAssets = {};
+
+function normalizePath(path) {
+    return path.toLowerCase().replace(/^.*?(data|images|songs|characters)/, "$1");
+}
+
+function saveAsset(path, blob) {
+    const clean = normalizePath(path);
+    const url = URL.createObjectURL(blob);
+    window.modAssets[clean] = url;
+}
+
+async function loadMod() {
+    const base = "${url}";
+
+    const res = await fetch(base + "manifest.json");
+    const manifest = await res.json();
+
+    const promises = manifest.files.map(async (file) => {
+        const r = await fetch(base + file);
+        const blob = await r.blob();
+        saveAsset(file, blob);
+    });
+
+    await Promise.all(promises);
+
+    console.log("Mod loaded!");
+}
+
+const originalFetch = window.fetch;
+
+window.fetch = async function(resource, options) {
+    if (typeof resource === "string") {
+        const path = normalizePath(resource);
+        if (window.modAssets[path]) {
+            return originalFetch(window.modAssets[path]);
+        }
+    }
+    return originalFetch(resource, options);
+};
+
+loadMod().then(() => {
+    lime.embed("Funkin", "openfl-content", 1280, 720, { parameters: {} });
+});
+</script>
+
+</body>
+</html>
+`;
+
+    document.getElementById("output").value = html;
+}
+</script>
+
+</body>
+</html>
